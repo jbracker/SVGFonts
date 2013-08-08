@@ -3,12 +3,21 @@ module Main where
 
 import Data.Char
 import Data.List.Split ( linesBy )
+import qualified Data.Map as M
+
+import qualified Control.Monad.Writer as W
 
 import System.Environment ( getArgs )
 import System.Exit ( exitFailure, exitSuccess )
-import System.IO ( withFile, IOMode(..) )
+import System.IO ( withFile, hPutStrLn, hFlush, IOMode(..), Handle )
 
-import Graphics.SVGFonts.ReadFont ( outlMap )
+import Graphics.SVGFonts.ReadFont ( outlMap, FontData(..), Kern(..) )
+
+import Diagrams.TwoD ( R2, unp2 )
+import Diagrams.Path
+import Diagrams.Trail
+import Diagrams.Segment
+import Diagrams.Located
 
 main :: IO ()
 main = do
@@ -32,9 +41,53 @@ writeHaskellFont fontFile fontModule fontBinding = do
   check (isModulePath modulePath) "The font module is invalid!"
   let font@(fontData, outlines) = outlMap fontFile
   let outputFile = last modulePath ++ ".hs"
-  withFile outputFile WriteMode $ \h -> do
-    -- TODO
-    return ()
+  let fontDataOut = do
+        line $ "F.FontData"
+        indent $ recordVals $
+          [ ("F.fontDataGlyphs", mapVals $ fontDataGlyphs fontData)
+          , ("F.fontDataKerning", indent $ do
+              line $ "F.Kern"
+              indent $ recordVals $ 
+                [ ("F.kernU1S", mapVals $ kernU1S $ fontDataKerning fontData)
+                , ("F.kernU2S", mapVals $ kernU2S $ fontDataKerning fontData)
+                , ("F.kernG1S", mapVals $ kernG1S $ fontDataKerning fontData)
+                , ("F.kernG2S", mapVals $ kernG2S $ fontDataKerning fontData)
+                , ("F.kernK", showVal $ kernK $ fontDataKerning fontData)
+                ])
+          , ("F.fontDataBoundingBox", showVal (fontDataBoundingBox fontData))
+          , ("F.fontDataFileName", showVal (fontDataFileName fontData))
+          , ("F.fontDataUnderlinePos", showVal (fontDataUnderlinePos fontData))
+          , ("F.fontDataUnderlineThickness", showVal (fontDataUnderlineThickness fontData))
+          , ("F.fontDataHorizontalAdvance", showVal (fontDataHorizontalAdvance fontData))
+          , ("F.fontDataFamily", showVal (fontDataFamily fontData))
+          , ("F.fontDataWeight", showVal (fontDataWeight fontData))
+          , ("F.fontDataStretch", showVal (fontDataStretch fontData))
+          , ("F.fontDataUnitsPerEm", showVal (fontDataUnitsPerEm fontData))
+          , ("F.fontDataPanose", showVal (fontDataPanose fontData))
+          , ("F.fontDataAscent", showVal (fontDataAscent fontData))
+          , ("F.fontDataDescent", showVal (fontDataDescent fontData))
+          , ("F.fontDataXHeight", showVal (fontDataXHeight fontData))
+          , ("F.fontDataCapHeight", showVal (fontDataCapHeight fontData))
+          , ("F.fontDataHorizontalStem", showVal (fontDataHorizontalStem fontData))
+          , ("F.fontDataVerticalStem", showVal (fontDataVerticalStem fontData))
+          , ("F.fontDataUnicodeRange", showVal (fontDataUnicodeRange fontData))
+          ]
+  let outlinesOut = mapVals' showPath outlines
+  withFile outputFile WriteMode $ \h -> write h $ do
+    line $ "module " ++ fontModule ++ " ( " ++ fontBinding ++ " ) where"
+    line $ "import Data.Map ( fromList )"
+    line $ "import qualified Data.Map as M"
+    line $ "import qualified Graphics.SVGFonts.ReadFont as F"
+    line $ "import Diagrams.TwoD"
+    line $ "import Diagrams.Coordinates"
+    line $ "import Diagrams.Segment"
+    line $ "import Diagrams.Trail"
+    line $ "import Diagrams.Path"
+    line $ "import Diagrams.Located"
+    line $ fontBinding ++ " :: (F.FontData, F.OutlineMap)"
+    line $ fontBinding ++ " = "
+    indent $ letBinds [ ("fontData", fontDataOut), ("outlines", outlinesOut)] $ do
+      line $ "(fontData, outlines)"
   return ()
 
 -- | Display the application help text.
@@ -44,6 +97,116 @@ displayHelp = do
   putStrLn "  input-svg-font    : The input SVG font file to be converted."
   putStrLn "  font-module       : The module name of the generated font."
   putStrLn "  font-binding-name : The identifier to bind the generated font to."
+
+-- -----------------------------------------------------------------------
+-- Writer Monad
+-- -----------------------------------------------------------------------
+
+newtype LineWriter a = LW { unLW :: W.Writer [String] a }
+
+instance Functor LineWriter where
+  fmap f = LW . fmap f . unLW
+
+instance Monad LineWriter where
+  return = LW . return
+  (>>=) m f = LW $ unLW m >>= unLW . f
+
+instance Show (LineWriter a) where
+  show w = unlines $ W.execWriter $ unLW w
+
+line :: String -> LineWriter ()
+line s = LW $ W.tell [s]
+
+indent :: LineWriter a -> LineWriter a
+indent w = LW $ W.censor (fmap ("  "++)) $ unLW w
+
+write :: Handle -> LineWriter a -> IO ()
+write h w = do
+  mapM_ (hPutStrLn h) (W.execWriter $ unLW w)
+  hFlush h
+
+
+recordVals :: [(String, LineWriter ())] -> LineWriter ()
+recordVals [] = line "{}"
+recordVals ((n,v):vs) = do
+    line $ "{ " ++ n ++ " = "
+    indent $ v 
+    recordVals' vs
+  where
+    recordVals' :: [(String, LineWriter ())] -> LineWriter ()
+    recordVals' [] = line $ "}"
+    recordVals' ((n,v):vs) = do
+      line $ ", " ++ n ++ " = "
+      indent $ v
+      recordVals' vs
+
+listVals :: (a -> String) -> [a] -> LineWriter ()
+listVals f [] = line "[]"
+listVals f (v:vs) = do
+    line $ "[ " ++ f v
+    listVals' f vs
+  where
+    listVals' :: (a -> String) -> [a] -> LineWriter ()
+    listVals' f [] = line $ "]"
+    listVals' f (v:vs) = do
+      line $ ", " ++ f v
+      listVals' f vs
+
+listVals' :: (a -> LineWriter ()) -> [a] -> LineWriter ()
+listVals' f [] = line "[]"
+listVals' f (v:vs) = do
+  line $ "["
+  f v
+  mapM_ (\x -> line "," >> indent (f x)) vs
+  line $ "]"
+
+mapVals :: (Show k, Show v) => M.Map k v -> LineWriter ()
+mapVals m = indent $ do
+  line "M.fromList $"
+  indent $ listVals show $ M.toList m
+
+mapVals' :: (Show k) => (v -> LineWriter ()) -> M.Map k v -> LineWriter ()
+mapVals' f m = indent $ do
+    line "M.fromList $"
+    listVals' (showEntry f) (M.toList m)
+  where
+    showEntry :: (Show k) => (v -> LineWriter ()) -> (k,v) -> LineWriter ()
+    showEntry f (k,v) = do
+      line $ "( " ++ show k ++ ", "
+      indent $ f v
+      line $ ")"
+
+showVal :: (Show v) => v -> LineWriter ()
+showVal = indent . line . show
+
+showPath :: Path R2 -> LineWriter ()
+showPath p = do
+    line "Path { pathTrails = "
+    indent $ listVals' showLoc $ pathTrails p
+    line "}"
+  where
+    showLoc :: Located (Trail R2) -> LineWriter ()
+    showLoc loc = do
+      let (pos, t) = viewLoc loc
+      line $ "at ("
+      indent $ showTrail t
+      line $ ") (p2 " ++ show (unp2 pos) ++ ")"
+    showTrail :: Trail R2 -> LineWriter ()
+    showTrail = line . show
+  
+
+letBinds :: [(String, LineWriter ())] -> LineWriter () -> LineWriter ()
+letBinds ((n,b):bs) v = do
+    line $ "let " ++ n ++ " ="
+    indent $ indent $ indent $ b
+    sequence_ $ fmap binding bs
+    line $ "in"
+    indent v
+  where
+    binding :: (String, LineWriter ()) -> LineWriter ()
+    binding (n, b) = do
+      indent $ indent $ line $ n ++ " ="
+      indent $ indent $ indent $ b
 
 -- -----------------------------------------------------------------------
 -- General utilities
