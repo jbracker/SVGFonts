@@ -2,6 +2,7 @@
 module Main where
 
 import Data.Char
+import Data.List
 import Data.List.Split ( linesBy )
 import qualified Data.Map as M
 
@@ -11,7 +12,7 @@ import System.Environment ( getArgs )
 import System.Exit ( exitFailure, exitSuccess )
 import System.IO ( withFile, hPutStrLn, hFlush, IOMode(..), Handle )
 
-import Graphics.SVGFonts.ReadFont ( outlMap, FontData(..), Kern(..) )
+import Graphics.SVGFonts.ReadFont ( outlMap, FontData(..), Kern(..), OutlineMap )
 
 import Diagrams.TwoD ( R2, unp2 )
 import Diagrams.Path
@@ -35,59 +36,14 @@ defaultFontBinding :: String
 defaultFontBinding = "font"
 
 writeHaskellFont :: FilePath -> String -> String -> IO ()
-writeHaskellFont fontFile fontModule fontBinding = do
+writeHaskellFont fontFile fontModuleName fontBinding = do
   check (isBindingName fontBinding) "The font binding name is invalid!"
-  let modulePath = linesBy (== '.') fontModule
-  check (isModulePath modulePath) "The font module is invalid!"
-  let font@(fontData, outlines) = outlMap fontFile
-  let outputFile = last modulePath ++ ".hs"
-  let fontDataOut = do
-        line $ "F.FontData"
-        indent $ recordVals $
-          [ ("F.fontDataGlyphs", mapVals $ fontDataGlyphs fontData)
-          , ("F.fontDataKerning", indent $ do
-              line $ "F.Kern"
-              indent $ recordVals $ 
-                [ ("F.kernU1S", mapVals $ kernU1S $ fontDataKerning fontData)
-                , ("F.kernU2S", mapVals $ kernU2S $ fontDataKerning fontData)
-                , ("F.kernG1S", mapVals $ kernG1S $ fontDataKerning fontData)
-                , ("F.kernG2S", mapVals $ kernG2S $ fontDataKerning fontData)
-                , ("F.kernK", showVal $ kernK $ fontDataKerning fontData)
-                ])
-          , ("F.fontDataBoundingBox", showVal (fontDataBoundingBox fontData))
-          , ("F.fontDataFileName", showVal (fontDataFileName fontData))
-          , ("F.fontDataUnderlinePos", showVal (fontDataUnderlinePos fontData))
-          , ("F.fontDataUnderlineThickness", showVal (fontDataUnderlineThickness fontData))
-          , ("F.fontDataHorizontalAdvance", showVal (fontDataHorizontalAdvance fontData))
-          , ("F.fontDataFamily", showVal (fontDataFamily fontData))
-          , ("F.fontDataWeight", showVal (fontDataWeight fontData))
-          , ("F.fontDataStretch", showVal (fontDataStretch fontData))
-          , ("F.fontDataUnitsPerEm", showVal (fontDataUnitsPerEm fontData))
-          , ("F.fontDataPanose", showVal (fontDataPanose fontData))
-          , ("F.fontDataAscent", showVal (fontDataAscent fontData))
-          , ("F.fontDataDescent", showVal (fontDataDescent fontData))
-          , ("F.fontDataXHeight", showVal (fontDataXHeight fontData))
-          , ("F.fontDataCapHeight", showVal (fontDataCapHeight fontData))
-          , ("F.fontDataHorizontalStem", showVal (fontDataHorizontalStem fontData))
-          , ("F.fontDataVerticalStem", showVal (fontDataVerticalStem fontData))
-          , ("F.fontDataUnicodeRange", showVal (fontDataUnicodeRange fontData))
-          ]
-  let outlinesOut = mapVals' showPath outlines
-  withFile outputFile WriteMode $ \h -> write h $ do
-    line $ "module " ++ fontModule ++ " ( " ++ fontBinding ++ " ) where"
-    line $ "import Data.Map ( fromList )"
-    line $ "import qualified Data.Map as M"
-    line $ "import qualified Graphics.SVGFonts.ReadFont as F"
-    line $ "import Diagrams.TwoD"
-    line $ "import Diagrams.Coordinates"
-    line $ "import Diagrams.Segment"
-    line $ "import Diagrams.Trail"
-    line $ "import Diagrams.Path"
-    line $ "import Diagrams.Located"
-    line $ fontBinding ++ " :: (F.FontData, F.OutlineMap)"
-    line $ fontBinding ++ " = "
-    indent $ letBinds [ ("fontData", fontDataOut), ("outlines", outlinesOut)] $ do
-      line $ "(fontData, outlines)"
+  let fontModulePath = linesBy (== '.') fontModuleName
+  check (isModulePath fontModulePath) "The font module is invalid!"
+  let (fontData, outlines) = outlMap fontFile
+  let fontModuleFile = intercalate "/" fontModulePath ++ ".hs"
+  withFile fontModuleFile WriteMode $ \h -> write h $ do
+    showFontModule fontModulePath fontBinding fontData outlines
   return ()
 
 -- | Display the application help text.
@@ -97,6 +53,39 @@ displayHelp = do
   putStrLn "  input-svg-font    : The input SVG font file to be converted."
   putStrLn "  font-module       : The module name of the generated font."
   putStrLn "  font-binding-name : The identifier to bind the generated font to."
+
+-- | @moduleHead m es@ shows the module head (with exports) where
+--   @m@ is the module name and @es@ is the list of exported bindings. 
+moduleHead :: String -> [String] -> LineWriter ()
+moduleHead m exports = do
+  line $ "module " ++ m ++ " ( " ++ intercalate ", " exports ++ " ) where"
+  line $ "import Data.Map ( fromList )"
+  line $ "import qualified Data.Map as M"
+  line $ "import qualified Graphics.SVGFonts.ReadFont as F"
+  line $ "import Diagrams.TwoD"
+  line $ "import Diagrams.Coordinates"
+  line $ "import Diagrams.Segment"
+  line $ "import Diagrams.Trail"
+  line $ "import Diagrams.Path"
+  line $ "import Diagrams.Located"
+
+showFontModule :: [String] -> String -> FontData -> OutlineMap -> LineWriter ()
+showFontModule fontModule export fontData outlines = do
+  let fontDataOut = showFontData fontData (mapVals $ fontDataGlyphs fontData) $ do
+        line $ "F.Kern"
+        indent $ recordVals $ 
+          [ ("F.kernU1S", mapVals $ kernU1S $ fontDataKerning fontData)
+          , ("F.kernU2S", mapVals $ kernU2S $ fontDataKerning fontData)
+          , ("F.kernG1S", mapVals $ kernG1S $ fontDataKerning fontData)
+          , ("F.kernG2S", mapVals $ kernG2S $ fontDataKerning fontData)
+          , ("F.kernK", showVal $ kernK $ fontDataKerning fontData)
+          ]
+  let outlinesOut = mapVals' showPath outlines
+  moduleHead (intercalate "." fontModule) [export]
+  line $ export ++ " :: (F.FontData, F.OutlineMap)"
+  line $ export ++ " = "
+  indent $ letBinds [ ("fontData", fontDataOut), ("outlines", outlinesOut)] $ do
+    line $ "(fontData, outlines)"
 
 -- -----------------------------------------------------------------------
 -- Writer Monad
@@ -135,25 +124,39 @@ recordVals ((n,v):vs) = do
   where
     recordVals' :: [(String, LineWriter ())] -> LineWriter ()
     recordVals' [] = line $ "}"
-    recordVals' ((n,v):vs) = do
-      line $ ", " ++ n ++ " = "
-      indent $ v
-      recordVals' vs
+    recordVals' ((n',v'):vs') = do
+      line $ ", " ++ n' ++ " = "
+      indent $ v'
+      recordVals' vs'
+
+letBinds :: [(String, LineWriter ())] -> LineWriter () -> LineWriter ()
+letBinds [] v = v
+letBinds ((n,b):bs) v = do
+    line $ "let " ++ n ++ " ="
+    indent $ indent $ indent $ b
+    sequence_ $ fmap binding bs
+    line $ "in"
+    indent v
+  where
+    binding :: (String, LineWriter ()) -> LineWriter ()
+    binding (n', b') = do
+      indent $ indent $ line $ n' ++ " ="
+      indent $ indent $ indent $ b'
 
 listVals :: (a -> String) -> [a] -> LineWriter ()
-listVals f [] = line "[]"
+listVals _ [] = line "[]"
 listVals f (v:vs) = do
     line $ "[ " ++ f v
-    listVals' f vs
+    showListHelper f vs
   where
-    listVals' :: (a -> String) -> [a] -> LineWriter ()
-    listVals' f [] = line $ "]"
-    listVals' f (v:vs) = do
-      line $ ", " ++ f v
-      listVals' f vs
+    showListHelper :: (a -> String) -> [a] -> LineWriter ()
+    showListHelper _ [] = line $ "]"
+    showListHelper f' (v':vs') = do
+      line $ ", " ++ f' v'
+      showListHelper f' vs'
 
 listVals' :: (a -> LineWriter ()) -> [a] -> LineWriter ()
-listVals' f [] = line "[]"
+listVals' _ [] = line "[]"
 listVals' f (v:vs) = do
   line $ "["
   f v
@@ -171,9 +174,9 @@ mapVals' f m = indent $ do
     listVals' (showEntry f) (M.toList m)
   where
     showEntry :: (Show k) => (v -> LineWriter ()) -> (k,v) -> LineWriter ()
-    showEntry f (k,v) = do
+    showEntry f' (k,v) = do
       line $ "( " ++ show k ++ ", "
-      indent $ f v
+      indent $ f' v
       line $ ")"
 
 showVal :: (Show v) => v -> LineWriter ()
@@ -186,27 +189,41 @@ showPath p = do
     line "}"
   where
     showLoc :: Located (Trail R2) -> LineWriter ()
-    showLoc loc = do
-      let (pos, t) = viewLoc loc
+    showLoc l = do
+      let (pos, t) = viewLoc l
       line $ "at ("
       indent $ showTrail t
       line $ ") (p2 " ++ show (unp2 pos) ++ ")"
     showTrail :: Trail R2 -> LineWriter ()
     showTrail = line . show
-  
 
-letBinds :: [(String, LineWriter ())] -> LineWriter () -> LineWriter ()
-letBinds ((n,b):bs) v = do
-    line $ "let " ++ n ++ " ="
-    indent $ indent $ indent $ b
-    sequence_ $ fmap binding bs
-    line $ "in"
-    indent v
-  where
-    binding :: (String, LineWriter ()) -> LineWriter ()
-    binding (n, b) = do
-      indent $ indent $ line $ n ++ " ="
-      indent $ indent $ indent $ b
+-- | @showFontData fd gs ks@ shows the given font data @fd@ using the
+--   @gs@ as the glyphs and @ks@ as the kernings.
+showFontData :: FontData -> LineWriter () -> LineWriter () -> LineWriter ()
+showFontData fontData glyphs kernings = do
+  line $ "F.FontData"
+  indent $ recordVals $
+    [ ("F.fontDataGlyphs", glyphs)
+    , ("F.fontDataKerning", kernings)
+    , ("F.fontDataBoundingBox", showVal (fontDataBoundingBox fontData))
+    , ("F.fontDataFileName", showVal (fontDataFileName fontData))
+    , ("F.fontDataUnderlinePos", showVal (fontDataUnderlinePos fontData))
+    , ("F.fontDataUnderlineThickness", showVal (fontDataUnderlineThickness fontData))
+    , ("F.fontDataHorizontalAdvance", showVal (fontDataHorizontalAdvance fontData))
+    , ("F.fontDataFamily", showVal (fontDataFamily fontData))
+    , ("F.fontDataWeight", showVal (fontDataWeight fontData))
+    , ("F.fontDataStretch", showVal (fontDataStretch fontData))
+    , ("F.fontDataUnitsPerEm", showVal (fontDataUnitsPerEm fontData))
+    , ("F.fontDataPanose", showVal (fontDataPanose fontData))
+    , ("F.fontDataAscent", showVal (fontDataAscent fontData))
+    , ("F.fontDataDescent", showVal (fontDataDescent fontData))
+    , ("F.fontDataXHeight", showVal (fontDataXHeight fontData))
+    , ("F.fontDataCapHeight", showVal (fontDataCapHeight fontData))
+    , ("F.fontDataHorizontalStem", showVal (fontDataHorizontalStem fontData))
+    , ("F.fontDataVerticalStem", showVal (fontDataVerticalStem fontData))
+    , ("F.fontDataUnicodeRange", showVal (fontDataUnicodeRange fontData))
+    ]
+
 
 -- -----------------------------------------------------------------------
 -- General utilities
