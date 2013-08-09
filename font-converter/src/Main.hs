@@ -1,9 +1,9 @@
- 
 module Main where
 
 import Data.Char
 import Data.List
 import Data.List.Split ( linesBy )
+import Data.String
 import qualified Data.Map as M
 
 import qualified Control.Monad.Writer as W
@@ -20,6 +20,8 @@ import Diagrams.Trail
 import Diagrams.Segment
 import Diagrams.Located
 
+import qualified Shelly as S
+
 main :: IO ()
 main = do
   args <- getArgs
@@ -31,6 +33,9 @@ main = do
     _ -> displayHelp
   exitSuccess
 
+dataPerFile :: Int
+dataPerFile = 30
+
 -- | Haskell identifier to bind the translated font to. 
 defaultFontBinding :: String
 defaultFontBinding = "font"
@@ -40,11 +45,39 @@ writeHaskellFont fontFile fontModuleName fontBinding = do
   check (isBindingName fontBinding) "The font binding name is invalid!"
   let fontModulePath = linesBy (== '.') fontModuleName
   check (isModulePath fontModulePath) "The font module is invalid!"
+  let outlineModulePath = fontModulePath ++ ["Outlines"]
+  let kerningModulePath = fontModulePath ++ ["Kernings"]
   let (fontData, outlines) = outlMap fontFile
-  let fontModuleFile = intercalate "/" fontModulePath ++ ".hs"
-  withFile fontModuleFile WriteMode $ \h -> write h $ do
-    showFontModule fontModulePath fontBinding fontData outlines
+  let outlineParts = 
+        (fmap ((fontModulePath++).return.("Outlines"++).show) [1::Int ..]) `zip` 
+        makeMapLists showPath outlines
+  let fontDataOut = showFontData fontData 
+        (mapVals $ fontDataGlyphs fontData) 
+        (line "kernings")
+  S.shelly $ do
+    S.mkdir_p $ concatPath fontModulePath
+  (flip mapM_) outlineParts $ \(modulePath, w) -> do
+    writeModule modulePath $ do
+      showOutlineMapModule modulePath "outlines" w
+  writeModule kerningModulePath $ do
+    showKerningModule kerningModulePath "kernings" (fontDataKerning fontData)
+  writeModule fontModulePath $ do
+    showFontModule fontModulePath fontBinding 
+      ([kerningModulePath] ++ fmap fst outlineParts)
+      fontDataOut
+      (line $
+        "("++(intercalate " `M.union` " $ fmap ((++".outlines").(intercalate ".").fst) outlineParts)++")"
+      )
   return ()
+
+concatPath :: [String] -> S.FilePath
+concatPath [] = fromString "."
+concatPath (p:[]) = fromString p
+concatPath (p:ps) = p S.</> concatPath ps
+
+writeModule :: [String] -> LineWriter a -> IO a
+writeModule modulePath w = do
+  withFile (intercalate "/" modulePath ++ ".hs") WriteMode $ \h -> write h w
 
 -- | Display the application help text.
 displayHelp :: IO ()
@@ -54,14 +87,24 @@ displayHelp = do
   putStrLn "  font-module       : The module name of the generated font."
   putStrLn "  font-binding-name : The identifier to bind the generated font to."
 
--- | @moduleHead m es@ shows the module head (with exports) where
---   @m@ is the module name and @es@ is the list of exported bindings. 
-moduleHead :: String -> [String] -> LineWriter ()
-moduleHead m exports = do
+-- | @moduleHead m es ms@ shows the module head (with exports) where
+--   @m@ is the module name and @es@ is the list of exported bindings.
+--   @ms@ gives the list of modules paths that also shall be imported.
+moduleHead :: String -> [String] -> [[String]] -> LineWriter ()
+moduleHead m exports ms = do
   line $ "module " ++ m ++ " ( " ++ intercalate ", " exports ++ " ) where"
-  line $ "import Data.Map ( fromList )"
+--   line $ "import Data.Map ( fromList )"
+  line $ "import Data.Vector"
   line $ "import qualified Data.Map as M"
   line $ "import qualified Graphics.SVGFonts.ReadFont as F"
+  mapM_ (\s -> line $ "import " ++ intercalate "." s) ms
+
+outlineModuleHead :: String -> [String] -> LineWriter ()
+outlineModuleHead m exports = do
+  line $ "module " ++ m ++ " ( " ++ intercalate ", " exports ++ " ) where"
+  line $ "import qualified Data.Map as M"
+  line $ "import qualified Graphics.SVGFonts.ReadFont as F"
+  line $ "import Data.FingerTree ( fromList )"
   line $ "import Diagrams.TwoD"
   line $ "import Diagrams.Coordinates"
   line $ "import Diagrams.Segment"
@@ -69,23 +112,64 @@ moduleHead m exports = do
   line $ "import Diagrams.Path"
   line $ "import Diagrams.Located"
 
-showFontModule :: [String] -> String -> FontData -> OutlineMap -> LineWriter ()
-showFontModule fontModule export fontData outlines = do
-  let fontDataOut = showFontData fontData (mapVals $ fontDataGlyphs fontData) $ do
-        line $ "F.Kern"
-        indent $ recordVals $ 
-          [ ("F.kernU1S", mapVals $ kernU1S $ fontDataKerning fontData)
-          , ("F.kernU2S", mapVals $ kernU2S $ fontDataKerning fontData)
-          , ("F.kernG1S", mapVals $ kernG1S $ fontDataKerning fontData)
-          , ("F.kernG2S", mapVals $ kernG2S $ fontDataKerning fontData)
-          , ("F.kernK", showVal $ kernK $ fontDataKerning fontData)
-          ]
-  let outlinesOut = mapVals' showPath outlines
-  moduleHead (intercalate "." fontModule) [export]
+showKerning :: Kern -> LineWriter ()
+showKerning k = indent $ do
+  line $ "F.Kern"
+  indent $ recordVals $ 
+    [ ("F.kernU1S", mapVals $ kernU1S $ k)
+    , ("F.kernU2S", mapVals $ kernU2S $ k)
+    , ("F.kernG1S", mapVals $ kernG1S $ k)
+    , ("F.kernG2S", mapVals $ kernG2S $ k)
+    , ("F.kernK", showVal $ kernK $ k)
+    ]
+
+-- | @showFontModule mp e ms fd om@ shows the central font module. @mp@ is the
+--   module path and @e@ gives the binding for the font. @fd@ shows the font data
+--   and @om@ shows the outline map. @ms@ gives a list of modules paths that also have to 
+--   be imported.
+showFontModule :: [String] -> String -> [[String]] -> LineWriter () -> LineWriter () -> LineWriter ()
+showFontModule modulePath export ms fontData outlines = do
+  moduleHead (intercalate "." modulePath) [export] ms
   line $ export ++ " :: (F.FontData, F.OutlineMap)"
   line $ export ++ " = "
-  indent $ letBinds [ ("fontData", fontDataOut), ("outlines", outlinesOut)] $ do
+  indent $ letBinds [ ("fontData", fontData), ("outlines", outlines)] $ do
     line $ "(fontData, outlines)"
+
+-- | @showOutlineMapModule mp e om@ - @mp@ module path, @e@ binding export, @om@ outline map;
+showOutlineMapModule :: [String] -> String -> LineWriter () -> LineWriter ()
+showOutlineMapModule modulePath export outlines = do
+  outlineModuleHead (intercalate "." modulePath) [export] 
+  line $ export ++ " :: F.OutlineMap"
+  line $ export ++ " = "
+  indent $ outlines
+
+-- | @showKerningModule mp e k@ - @mp@ module path, @e@ binding export, @om@ kernings;
+showKerningModule :: [String] -> String -> Kern -> LineWriter ()
+showKerningModule modulePath export k = do
+  moduleHead (intercalate "." modulePath) [export] []
+  line $ export ++ " :: F.Kern"
+  line $ export ++ " = "
+  showKerning k
+
+showBindModule :: [String] -> (String, String) -> LineWriter () -> LineWriter ()
+showBindModule modulePath (export, exportT) w = do
+  moduleHead (intercalate "." modulePath) [export] []
+  line $ export ++ " :: " ++ exportT
+  line $ export ++ " = "
+  indent $ w
+
+makeMapLists :: (Show k) => (v -> LineWriter ()) -> M.Map k v -> [LineWriter ()]
+makeMapLists f m = do
+  l <- divideList dataPerFile (M.toList m)
+  return $ do
+    line "M.fromList $"
+    indent $ listVals' (showEntry f) l
+
+divideList :: Int -> [a] -> [[a]]
+divideList _ [] = []
+divideList n xs = 
+  let (front, back) = splitAt n xs
+  in front : divideList n back
 
 -- -----------------------------------------------------------------------
 -- Writer Monad
@@ -109,10 +193,12 @@ line s = LW $ W.tell [s]
 indent :: LineWriter a -> LineWriter a
 indent w = LW $ W.censor (fmap ("  "++)) $ unLW w
 
-write :: Handle -> LineWriter a -> IO ()
+write :: Handle -> LineWriter a -> IO a
 write h w = do
-  mapM_ (hPutStrLn h) (W.execWriter $ unLW w)
+  let (x, ls) = W.runWriter $ unLW w
+  mapM_ (hPutStrLn h) ls
   hFlush h
+  return x
 
 
 recordVals :: [(String, LineWriter ())] -> LineWriter ()
@@ -172,12 +258,12 @@ mapVals' :: (Show k) => (v -> LineWriter ()) -> M.Map k v -> LineWriter ()
 mapVals' f m = indent $ do
     line "M.fromList $"
     listVals' (showEntry f) (M.toList m)
-  where
-    showEntry :: (Show k) => (v -> LineWriter ()) -> (k,v) -> LineWriter ()
-    showEntry f' (k,v) = do
-      line $ "( " ++ show k ++ ", "
-      indent $ f' v
-      line $ ")"
+
+showEntry :: (Show k) => (v -> LineWriter ()) -> (k,v) -> LineWriter ()
+showEntry f' (k,v) = do
+  line $ "( " ++ show k ++ ", "
+  indent $ f' v
+  line $ ")"
 
 showVal :: (Show v) => v -> LineWriter ()
 showVal = indent . line . show
