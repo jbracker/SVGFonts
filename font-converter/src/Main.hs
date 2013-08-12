@@ -38,28 +38,33 @@ writeHaskellFont fontFile fontModuleName fontBinding = do
   let fontModulePath = linesBy (== '.') fontModuleName
   check (isModulePath fontModulePath) "The font module is invalid!"
   let outlineModulePath = fontModulePath ++ ["Outlines"]
+  let glyphsModulePath = fontModulePath ++ ["Glyphs"]
   let kerningModulePath = fontModulePath ++ ["Kernings"]
   let (fontData, outlines) = outlMap fontFile
   let outlineParts = 
         (fmap ((fontModulePath++).return.("Outlines"++).show) [1::Int ..]) `zip` 
         makeMapLists showPath outlines
+  let glyphParts = 
+        (fmap ((fontModulePath++).return.("Glyphs"++).show) [1::Int ..]) `zip` 
+        makeMapLists showVal (fontDataGlyphs fontData)
   let fontDataOut = showFontData fontData 
-        (showMap $ fontDataGlyphs fontData) 
+        (showMapUnion $ fmap (line.(++".glyphs").(intercalate ".").fst) glyphParts) 
         (line "kernings")
   S.shelly $ do
     S.mkdir_p $ concatPath fontModulePath
   (flip mapM_) outlineParts $ \(modulePath, w) -> do
     writeModule modulePath $ do
       showOutlineMapModule modulePath "outlines" w
+  (flip mapM_) glyphParts $ \(modulePath, w) -> do
+    writeModule modulePath $ do
+      showGlyphMapModule modulePath "glyphs" w
   writeModule kerningModulePath $ do
     showKerningModule kerningModulePath "kernings" (fontDataKerning fontData)
   writeModule fontModulePath $ do
     showFontModule fontModulePath fontBinding 
-      ([kerningModulePath] ++ fmap fst outlineParts)
+      ([kerningModulePath] ++ fmap fst outlineParts ++ fmap fst glyphParts)
       fontDataOut
-      (line $
-        "("++(intercalate " `M.union` " $ fmap ((++".outlines").(intercalate ".").fst) outlineParts)++")"
-      )
+      (showMapUnion $ fmap (line.(++".outlines").(intercalate ".").fst) outlineParts)
   return ()
 
 concatPath :: [String] -> S.FilePath

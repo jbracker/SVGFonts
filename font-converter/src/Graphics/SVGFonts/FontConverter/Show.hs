@@ -42,6 +42,9 @@ showBinding (n, t) v = do
 showImports :: [String] -> LineWriter ()
 showImports = mapM_ (line . ("import " ++))
 
+showQualifiedImport :: (String, String) -> LineWriter ()
+showQualifiedImport (m,n) = line $ "import qualified " ++ m ++ " as " ++ n
+
 showTuple :: [LineWriter ()] -> LineWriter ()
 showTuple [] = line $ "()"
 showTuple (v:vs) = do
@@ -61,10 +64,13 @@ showDiagramsImports = showImports
   , "Diagrams.Path"
   , "Diagrams.Located" ]
 
+showMapImport :: LineWriter ()
+showMapImport = showQualifiedImport ("Data.Map", "M")
+
 outlineModuleHead :: String -> [String] -> LineWriter ()
 outlineModuleHead m exports = do
   line $ "module " ++ m ++ " ( " ++ intercalate ", " exports ++ " ) where"
-  line $ "import qualified Data.Map as M"
+  showMapImport
   line $ "import qualified Graphics.SVGFonts.ReadFont as F"
   line $ "import Data.FingerTree ( fromList )"
   showDiagramsImports
@@ -76,7 +82,7 @@ moduleHead :: String -> [String] -> [[String]] -> LineWriter ()
 moduleHead m exports ms = do
   line $ "module " ++ m ++ " ( " ++ intercalate ", " exports ++ " ) where"
   line $ "import Data.Vector"
-  line $ "import qualified Data.Map as M"
+  showMapImport
   line $ "import qualified Graphics.SVGFonts.ReadFont as F"
   showImports $ fmap (intercalate ".") $ ms
 
@@ -96,6 +102,12 @@ showOutlineMapModule :: [String] -> String -> LineWriter () -> LineWriter ()
 showOutlineMapModule modulePath export outlines = do
   outlineModuleHead (intercalate "." modulePath) [export]
   showBinding (export, "F.OutlineMap") outlines
+
+-- | @showGlyphMapModule mp e om@ - @mp@ module path, @e@ binding export, @om@ outline map;
+showGlyphMapModule :: [String] -> String -> LineWriter () -> LineWriter ()
+showGlyphMapModule modulePath export glyphs = do
+  outlineModuleHead (intercalate "." modulePath) [export]
+  showBinding (export, "M.Map String (String, Double, String)") glyphs
 
 -- | @showKerningModule mp e k@ - @mp@ module path, @e@ binding export, @om@ kernings;
 showKerningModule :: [String] -> String -> Kern -> LineWriter ()
@@ -171,6 +183,13 @@ showMap' :: (Show k) => (v -> LineWriter ()) -> M.Map k v -> LineWriter ()
 showMap' f m = indent $ do
     line "M.fromList $"
     showList'' (showEntry f) (M.toList m)
+
+showMapUnion :: [LineWriter ()] -> LineWriter ()
+showMapUnion (m:ms) = do
+  line $ "( "
+  indent $ m
+  mapM_ (line "`M.union`" >>) ms
+  line $ ")"
 
 showEntry :: (Show k) => (v -> LineWriter ()) -> (k,v) -> LineWriter ()
 showEntry f (k,v) = showTuple [line $ show k, f v]
