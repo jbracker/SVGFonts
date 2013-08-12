@@ -11,10 +11,12 @@ import System.Exit ( exitSuccess )
 
 import qualified Shelly as S
 
-import Graphics.SVGFonts.ReadFont ( outlMap, FontData(..), Kern(..), OutlineMap )
+import Graphics.SVGFonts.ReadFont 
+  ( outlMap, FontData(..), OutlineMap, SvgGlyphs, commands, commandsToTrails )
 import Graphics.SVGFonts.FontConverter.Types
 import Graphics.SVGFonts.FontConverter.Show
 import Graphics.SVGFonts.FontConverter.Utils
+
 
 main :: IO ()
 main = do
@@ -37,13 +39,15 @@ writeHaskellFont fontFile fontModuleName fontBinding = do
   check (isBindingName fontBinding) "The font binding name is invalid!"
   let fontModulePath = linesBy (== '.') fontModuleName
   check (isModulePath fontModulePath) "The font module is invalid!"
-  let outlineModulePath = fontModulePath ++ ["Outlines"]
+  --let outlineModulePath = fontModulePath ++ ["Outlines"]
   let glyphsModulePath = fontModulePath ++ ["Glyphs"]
   let kerningModulePath = fontModulePath ++ ["Kernings"]
   let (fontData, outlines) = outlMap fontFile
+  {-
   let outlineParts = 
         (fmap ((fontModulePath++).return.("Outlines"++).show) [1::Int ..]) `zip` 
         makeMapLists showPath outlines
+                -}
   let glyphParts = 
         (fmap ((fontModulePath++).return.("Glyphs"++).show) [1::Int ..]) `zip` 
         makeMapLists showVal (fontDataGlyphs fontData)
@@ -52,9 +56,11 @@ writeHaskellFont fontFile fontModuleName fontBinding = do
         (line "kernings")
   S.shelly $ do
     S.mkdir_p $ concatPath fontModulePath
+  {-
   (flip mapM_) outlineParts $ \(modulePath, w) -> do
     writeModule modulePath $ do
       showOutlineMapModule modulePath "outlines" w
+      -}
   (flip mapM_) glyphParts $ \(modulePath, w) -> do
     writeModule modulePath $ do
       showGlyphMapModule modulePath "glyphs" w
@@ -62,9 +68,9 @@ writeHaskellFont fontFile fontModuleName fontBinding = do
     showKerningModule kerningModulePath "kernings" (fontDataKerning fontData)
   writeModule fontModulePath $ do
     showFontModule fontModulePath fontBinding 
-      ([kerningModulePath] ++ fmap fst outlineParts ++ fmap fst glyphParts)
+      ([kerningModulePath] ++ {- fmap fst outlineParts ++ -} fmap fst glyphParts)
       fontDataOut
-      (showMapUnion $ fmap (line.(++".outlines").(intercalate ".").fst) outlineParts)
+      (line $ "glyphsToOutlines $ F.fontDataGlyphs fontData")-- (showMapUnion $ fmap (line.(++".outlines").(intercalate ".").fst) outlineParts)
   return ()
 
 concatPath :: [String] -> S.FilePath
@@ -83,11 +89,6 @@ displayHelp = do
   putStrLn "  input-svg-font    : The input SVG font file to be converted."
   putStrLn "  font-module       : The module name of the generated font."
   putStrLn "  font-binding-name : The identifier to bind the generated font to."
-
-
-
-
-
 
 -- -----------------------------------------------------------------------
 -- String utilities for Haskell code

@@ -12,7 +12,7 @@ import qualified Control.Monad.Writer as W
 import System.IO ( withFile, hPutStrLn, hFlush, IOMode(..), Handle )
 
 dataPerFile :: Int
-dataPerFile = 30
+dataPerFile = 100
 
 -- -----------------------------------------------------------------------
 -- Writer Monad

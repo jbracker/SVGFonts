@@ -86,6 +86,12 @@ moduleHead m exports ms = do
   line $ "import qualified Graphics.SVGFonts.ReadFont as F"
   showImports $ fmap (intercalate ".") $ ms
 
+showConversionFunction :: LineWriter ()
+showConversionFunction = do
+  line $ "glyphsToOutlines :: F.SvgGlyphs -> F.OutlineMap"
+  line $ "glyphsToOutlines glyphs = (flip M.mapWithKey) glyphs $ "
+  line $ "  \\ch _ -> mconcat $ F.commandsToTrails (F.commands ch glyphs) [] zeroV zeroV zeroV"
+
 -- | @showFontModule mp e ms fd om@ shows the central font module. @mp@ is the
 --   module path and @e@ gives the binding for the font. @fd@ shows the font data
 --   and @om@ shows the outline map. @ms@ gives a list of modules paths that also have to 
@@ -93,6 +99,8 @@ moduleHead m exports ms = do
 showFontModule :: [String] -> String -> [[String]] -> LineWriter () -> LineWriter () -> LineWriter ()
 showFontModule modulePath export ms fontData outlines = do
   moduleHead (intercalate "." modulePath) [export] ms
+  showImports ["Data.Monoid", "Data.AdditiveGroup"]
+  showConversionFunction
   showBinding (export, "(F.FontData, F.OutlineMap)") $ do
     showLet [ ("fontData", fontData), ("outlines", outlines)] $ do
       line $ "(fontData, outlines)"
