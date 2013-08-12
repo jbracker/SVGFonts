@@ -1,7 +1,7 @@
 
 module Graphics.SVGFonts.FontConverter.Utils where  
 
-import System.Exit ( exitFailure, exitSuccess )
+import System.Exit ( exitFailure )
 
 -- -----------------------------------------------------------------------
 -- General utilities
@@ -20,10 +20,12 @@ check False e = do
 --   
 -- > template "Hello $0, your last name is $1!" ["John", "Snow"] == "Hello John, your last name is Snow!"
 --   
-template :: String -> [String] -> Maybe String
-template ('$':t) substs = 
+--   This is fail safe. If a entry can not be found of the part after a dollar
+--   can not be parsed as a number it will simply be ignored and remains unchanged.
+template :: [String] -> String -> String
+template substs ('$':t) = 
   case reads t of
-    ((i,tRest):_) | i >= 0 -> ((substs !! i) ++) `fmap` template tRest substs
-    _ -> Nothing
-template (c:t) substs = (c:) `fmap` template t substs
-template [] _ = return []
+    ((i,tRest):_) | i >= 0 && i < length substs -> (substs !! i) ++ template substs tRest
+    _ -> '$' : template substs t
+template substs (c:t) = c : template substs t
+template _ [] = []

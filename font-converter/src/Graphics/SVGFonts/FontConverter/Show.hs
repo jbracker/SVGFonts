@@ -7,11 +7,59 @@ import qualified Data.Map as M
 import Diagrams.TwoD ( R2, unp2 )
 import Diagrams.Path
 import Diagrams.Trail
-import Diagrams.Segment
+--import Diagrams.Segment
 import Diagrams.Located
 
 import Graphics.SVGFonts.ReadFont ( outlMap, FontData(..), Kern(..), OutlineMap )
 import Graphics.SVGFonts.FontConverter.Types
+import Graphics.SVGFonts.FontConverter.Utils
+
+-- | Applies 'template' with the given substitutions on each line of the writer.
+templateLW :: [String] -> LineWriter a -> LineWriter a
+templateLW ts w = do
+  let (x, ls) = runLW w
+  mapM_ (line . template ts) ls
+  return x
+
+showRecord :: String -> [(String, LineWriter ())] -> LineWriter ()
+showRecord name [] = line $ name ++ " {}"
+showRecord name ((n,v):vs) = do
+    line name
+    indent $ do
+      line $ "{ " ++ n ++ " = "
+      indent $ indent $ v
+      (flip mapM_) vs $ \(n',v') -> do
+        line $ ", " ++ n' ++ " = "
+        indent $ indent $ v'
+      line $ "}"
+
+showBinding :: (String, String) -> LineWriter () -> LineWriter ()
+showBinding (n, t) v = do
+  line $ n ++ " :: " ++ t
+  line $ n ++ " = "
+  indent $ v
+
+showImports :: [String] -> LineWriter ()
+showImports = mapM_ (line . ("import " ++))
+
+showTuple :: [LineWriter ()] -> LineWriter ()
+showTuple [] = line $ "()"
+showTuple (v:vs) = do
+  line $ "("
+  indent $ v
+  (flip mapM_) vs $ \v' -> do
+    line $ ","
+    indent $ v'
+  line $ ")"
+
+showDiagramsImports :: LineWriter ()
+showDiagramsImports = showImports 
+  [ "Diagrams.TwoD"
+  , "Diagrams.Coordinates"
+  , "Diagrams.Segment"
+  , "Diagrams.Trail"
+  , "Diagrams.Path"
+  , "Diagrams.Located" ]
 
 outlineModuleHead :: String -> [String] -> LineWriter ()
 outlineModuleHead m exports = do
@@ -19,12 +67,7 @@ outlineModuleHead m exports = do
   line $ "import qualified Data.Map as M"
   line $ "import qualified Graphics.SVGFonts.ReadFont as F"
   line $ "import Data.FingerTree ( fromList )"
-  line $ "import Diagrams.TwoD"
-  line $ "import Diagrams.Coordinates"
-  line $ "import Diagrams.Segment"
-  line $ "import Diagrams.Trail"
-  line $ "import Diagrams.Path"
-  line $ "import Diagrams.Located"
+  showDiagramsImports
 
 -- | @moduleHead m es ms@ shows the module head (with exports) where
 --   @m@ is the module name and @es@ is the list of exported bindings.
@@ -32,11 +75,10 @@ outlineModuleHead m exports = do
 moduleHead :: String -> [String] -> [[String]] -> LineWriter ()
 moduleHead m exports ms = do
   line $ "module " ++ m ++ " ( " ++ intercalate ", " exports ++ " ) where"
---   line $ "import Data.Map ( fromList )"
   line $ "import Data.Vector"
   line $ "import qualified Data.Map as M"
   line $ "import qualified Graphics.SVGFonts.ReadFont as F"
-  mapM_ (\s -> line $ "import " ++ intercalate "." s) ms
+  showImports $ fmap (intercalate ".") $ ms
 
 -- | @showFontModule mp e ms fd om@ shows the central font module. @mp@ is the
 --   module path and @e@ gives the binding for the font. @fd@ shows the font data
@@ -45,44 +87,35 @@ moduleHead m exports ms = do
 showFontModule :: [String] -> String -> [[String]] -> LineWriter () -> LineWriter () -> LineWriter ()
 showFontModule modulePath export ms fontData outlines = do
   moduleHead (intercalate "." modulePath) [export] ms
-  line $ export ++ " :: (F.FontData, F.OutlineMap)"
-  line $ export ++ " = "
-  indent $ letBinds [ ("fontData", fontData), ("outlines", outlines)] $ do
-    line $ "(fontData, outlines)"
+  showBinding (export, "(F.FontData, F.OutlineMap)") $ do
+    showLet [ ("fontData", fontData), ("outlines", outlines)] $ do
+      line $ "(fontData, outlines)"
 
 -- | @showOutlineMapModule mp e om@ - @mp@ module path, @e@ binding export, @om@ outline map;
 showOutlineMapModule :: [String] -> String -> LineWriter () -> LineWriter ()
 showOutlineMapModule modulePath export outlines = do
-  outlineModuleHead (intercalate "." modulePath) [export] 
-  line $ export ++ " :: F.OutlineMap"
-  line $ export ++ " = "
-  indent $ outlines
+  outlineModuleHead (intercalate "." modulePath) [export]
+  showBinding (export, "F.OutlineMap") outlines
 
 -- | @showKerningModule mp e k@ - @mp@ module path, @e@ binding export, @om@ kernings;
 showKerningModule :: [String] -> String -> Kern -> LineWriter ()
 showKerningModule modulePath export k = do
   moduleHead (intercalate "." modulePath) [export] []
-  line $ export ++ " :: F.Kern"
-  line $ export ++ " = "
-  showKerning k
+  showBinding (export, "F.Kern") $ showKerning k
 
 showKerning :: Kern -> LineWriter ()
-showKerning k = indent $ do
-  line $ "F.Kern"
-  indent $ recordVals $ 
-    [ ("F.kernU1S", showMap $ kernU1S $ k)
-    , ("F.kernU2S", showMap $ kernU2S $ k)
-    , ("F.kernG1S", showMap $ kernG1S $ k)
-    , ("F.kernG2S", showMap $ kernG2S $ k)
-    , ("F.kernK", showVal $ kernK $ k)
-    ]
+showKerning k = showRecord "F.Kern" $ 
+  [ ("F.kernU1S", showMap $ kernU1S $ k)
+  , ("F.kernU2S", showMap $ kernU2S $ k)
+  , ("F.kernG1S", showMap $ kernG1S $ k)
+  , ("F.kernG2S", showMap $ kernG2S $ k)
+  , ("F.kernK", showVal $ kernK $ k)
+  ]
 
 showBindModule :: [String] -> (String, String) -> LineWriter () -> LineWriter ()
-showBindModule modulePath (export, exportT) w = do
-  moduleHead (intercalate "." modulePath) [export] []
-  line $ export ++ " :: " ++ exportT
-  line $ export ++ " = "
-  indent $ w
+showBindModule modulePath export@(n,_) w = do
+  moduleHead (intercalate "." modulePath) [n] []
+  showBinding export w
 
 makeMapLists :: (Show k) => (v -> LineWriter ()) -> M.Map k v -> [LineWriter ()]
 makeMapLists f m = do
@@ -97,36 +130,17 @@ divideList n xs =
   let (front, back) = splitAt n xs
   in front : divideList n back
 
-
-
-
-recordVals :: [(String, LineWriter ())] -> LineWriter ()
-recordVals [] = line "{}"
-recordVals ((n,v):vs) = do
-    line $ "{ " ++ n ++ " = "
-    indent $ v 
-    recordVals' vs
-  where
-    recordVals' :: [(String, LineWriter ())] -> LineWriter ()
-    recordVals' [] = line $ "}"
-    recordVals' ((n',v'):vs') = do
-      line $ ", " ++ n' ++ " = "
-      indent $ v'
-      recordVals' vs'
-
-letBinds :: [(String, LineWriter ())] -> LineWriter () -> LineWriter ()
-letBinds [] v = v
-letBinds ((n,b):bs) v = do
+showLet :: [(String, LineWriter ())] -> LineWriter () -> LineWriter ()
+showLet [] v = v
+showLet ((n,b):bs) v = do
     line $ "let " ++ n ++ " ="
-    indent $ indent $ indent $ b
-    sequence_ $ fmap binding bs
+    indent $ indent $ do
+      indent $ b
+      (flip mapM_) bs $ \(n',b') -> do
+        line $ n' ++ " ="
+        indent $ b'
     line $ "in"
-    indent v
-  where
-    binding :: (String, LineWriter ()) -> LineWriter ()
-    binding (n', b') = do
-      indent $ indent $ line $ n' ++ " ="
-      indent $ indent $ indent $ b'
+    indent $ v
 
 showList' :: (a -> String) -> [a] -> LineWriter ()
 showList' _ [] = line "[]"
@@ -159,19 +173,13 @@ showMap' f m = indent $ do
     showList'' (showEntry f) (M.toList m)
 
 showEntry :: (Show k) => (v -> LineWriter ()) -> (k,v) -> LineWriter ()
-showEntry f' (k,v) = do
-  line $ "( " ++ show k ++ ", "
-  indent $ f' v
-  line $ ")"
+showEntry f (k,v) = showTuple [line $ show k, f v]
 
 showVal :: (Show v) => v -> LineWriter ()
-showVal = indent . line . show
+showVal = line . show
 
 showPath :: Path R2 -> LineWriter ()
-showPath p = do
-    line "Path { pathTrails = "
-    indent $ showList'' showLoc $ pathTrails p
-    line "}"
+showPath p = showRecord "Path" [("pathTrails", showList'' showLoc $ pathTrails p)]
   where
     showLoc :: Located (Trail R2) -> LineWriter ()
     showLoc l = do
@@ -180,31 +188,33 @@ showPath p = do
       indent $ showTrail t
       line $ ") (p2 " ++ show (unp2 pos) ++ ")"
     showTrail :: Trail R2 -> LineWriter ()
-    showTrail = line . show
+    showTrail = showVal
 
 -- | @showFontData fd gs ks@ shows the given font data @fd@ using the
 --   @gs@ as the glyphs and @ks@ as the kernings.
 showFontData :: FontData -> LineWriter () -> LineWriter () -> LineWriter ()
-showFontData fontData glyphs kernings = do
-  line $ "F.FontData"
-  indent $ recordVals $
-    [ ("F.fontDataGlyphs", glyphs)
-    , ("F.fontDataKerning", kernings)
-    , ("F.fontDataBoundingBox", showVal (fontDataBoundingBox fontData))
-    , ("F.fontDataFileName", showVal (fontDataFileName fontData))
-    , ("F.fontDataUnderlinePos", showVal (fontDataUnderlinePos fontData))
-    , ("F.fontDataUnderlineThickness", showVal (fontDataUnderlineThickness fontData))
-    , ("F.fontDataHorizontalAdvance", showVal (fontDataHorizontalAdvance fontData))
-    , ("F.fontDataFamily", showVal (fontDataFamily fontData))
-    , ("F.fontDataWeight", showVal (fontDataWeight fontData))
-    , ("F.fontDataStretch", showVal (fontDataStretch fontData))
-    , ("F.fontDataUnitsPerEm", showVal (fontDataUnitsPerEm fontData))
-    , ("F.fontDataPanose", showVal (fontDataPanose fontData))
-    , ("F.fontDataAscent", showVal (fontDataAscent fontData))
-    , ("F.fontDataDescent", showVal (fontDataDescent fontData))
-    , ("F.fontDataXHeight", showVal (fontDataXHeight fontData))
-    , ("F.fontDataCapHeight", showVal (fontDataCapHeight fontData))
-    , ("F.fontDataHorizontalStem", showVal (fontDataHorizontalStem fontData))
-    , ("F.fontDataVerticalStem", showVal (fontDataVerticalStem fontData))
-    , ("F.fontDataUnicodeRange", showVal (fontDataUnicodeRange fontData))
-    ]
+showFontData fontData glyphs kernings = showRecord "F.FontData" $
+  [ ("F.fontDataGlyphs", glyphs)
+  , ("F.fontDataKerning", kernings)
+  , ("F.fontDataBoundingBox", showVal (fontDataBoundingBox fontData))
+  , ("F.fontDataFileName", showVal (fontDataFileName fontData))
+  , ("F.fontDataUnderlinePos", showVal (fontDataUnderlinePos fontData))
+  , ("F.fontDataUnderlineThickness", showVal (fontDataUnderlineThickness fontData))
+  , ("F.fontDataHorizontalAdvance", showVal (fontDataHorizontalAdvance fontData))
+  , ("F.fontDataFamily", showVal (fontDataFamily fontData))
+  , ("F.fontDataWeight", showVal (fontDataWeight fontData))
+  , ("F.fontDataStretch", showVal (fontDataStretch fontData))
+  , ("F.fontDataUnitsPerEm", showVal (fontDataUnitsPerEm fontData))
+  , ("F.fontDataPanose", showVal (fontDataPanose fontData))
+  , ("F.fontDataAscent", showVal (fontDataAscent fontData))
+  , ("F.fontDataDescent", showVal (fontDataDescent fontData))
+  , ("F.fontDataXHeight", showVal (fontDataXHeight fontData))
+  , ("F.fontDataCapHeight", showVal (fontDataCapHeight fontData))
+  , ("F.fontDataHorizontalStem", showVal (fontDataHorizontalStem fontData))
+  , ("F.fontDataVerticalStem", showVal (fontDataVerticalStem fontData))
+  , ("F.fontDataUnicodeRange", showVal (fontDataUnicodeRange fontData))
+  ]
+
+
+
+
