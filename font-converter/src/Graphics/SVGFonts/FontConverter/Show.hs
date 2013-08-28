@@ -72,7 +72,7 @@ outlineModuleHead m exports = do
   line $ "module " ++ m ++ " ( " ++ intercalate ", " exports ++ " ) where"
   showMapImport
   line $ "import qualified Graphics.SVGFonts.ReadFont as F"
-  line $ "import Data.FingerTree ( fromList )"
+  --line $ "import Data.FingerTree ( fromList )"
   showDiagramsImports
 
 -- | @moduleHead m es ms@ shows the module head (with exports) where
